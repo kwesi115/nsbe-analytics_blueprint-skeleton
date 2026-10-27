@@ -180,7 +180,11 @@ export async function buildWorkbookExport(orgId: string): Promise<Buffer> {
       r.pointsAwarded,
       ...fields.map((f) => r.answers[f.fieldKey] ?? ""),
     ]);
-    addReportSheet(wb, `Responses_${event.slug}`, headers, rows);
+    // The tab name is truncated (and suffixed on a clash — see
+    // uniqueSheetName), so the sheet itself names the event it holds.
+    addReportSheet(wb, `Responses_${event.slug}`, headers, rows, {
+      note: `${event.name} (${event.slug}) — ${formatDateTime(event.date)}`,
+    });
   }
 
   const buffer = await wb.xlsx.writeBuffer();

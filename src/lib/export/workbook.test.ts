@@ -8,6 +8,7 @@ import ExcelJS from "exceljs";
 import { describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_LEADERBOARD_DISCLAIMER, getConfigValue } from "@/lib/repo";
+import { createTestOrg, makeClosedEvent } from "@/test/db-fixtures";
 import { buildWorkbookExport } from "./workbook";
 
 // A full season workbook built from the database — comfortably under 5s alone, but not under the
@@ -67,5 +68,38 @@ describe("buildWorkbookExport — Leaderboard sheet disclaimer", () => {
     expect(sheet).toBeDefined();
     expect(sheet!.getCell(1, 1).value).toBe(disclaimer);
     expect(sheet!.getCell(2, 1).value).toBe("Rank");
+  });
+});
+
+describe("buildWorkbookExport — per-event Responses sheets", () => {
+  // Excel caps a sheet name at 31 characters and exceljs refuses a duplicate
+  // (case-insensitively). "Responses_" + a recurring event's slug collides
+  // once truncated: general-body-meeting-2026 and general-body-meeting-2026-2
+  // are both "Responses_general-body-meeting-". That threw, and the route
+  // turned it into a bare 500.
+  it("exports events whose slugs only differ past the 31-character sheet-name limit", async () => {
+    const org = await createTestOrg("workbook-sheets");
+    try {
+      const slugs = ["general-body-meeting-2026", "general-body-meeting-2026-2", "GENERAL-BODY-MEETING-2026-3"];
+      for (const slug of slugs) {
+        const e = await makeClosedEvent(org.orgId, org.gbmCategoryId, { name: "General Body Meeting" });
+        await prisma.event.update({ where: { id: e.id }, data: { slug } });
+      }
+
+      const buffer = await buildWorkbookExport(org.orgId);
+      const wb = new ExcelJS.Workbook();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await wb.xlsx.load(buffer as any);
+
+      const responseSheets = wb.worksheets.filter((ws) => ws.name.startsWith("Responses_"));
+      expect(responseSheets).toHaveLength(3);
+      expect(new Set(responseSheets.map((ws) => ws.name.toLowerCase())).size).toBe(3);
+      for (const ws of responseSheets) expect(ws.name.length).toBeLessThanOrEqual(31);
+      // A truncated tab name can't say which event it is, so the sheet does.
+      const notes = responseSheets.map((ws) => String(ws.getCell(1, 1).value));
+      for (const slug of slugs) expect(notes.some((n) => n.includes(slug))).toBe(true);
+    } finally {
+      await org.cleanup();
+    }
   });
 });

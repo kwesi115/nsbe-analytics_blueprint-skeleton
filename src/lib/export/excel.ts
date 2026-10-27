@@ -9,6 +9,31 @@ import ExcelJS from "exceljs";
 const HEADER_FILL = "FF1B2A4A"; // navy
 const HEADER_TEXT = "FFFFFFFF";
 
+const MAX_SHEET_NAME = 31;
+
+/**
+ * A legal sheet name not already used in this workbook. Excel allows 31
+ * characters, none of [ ] : * ? / \, no leading/trailing apostrophe, and
+ * reserves "History"; exceljs throws on a name that repeats an existing one
+ * case-insensitively. Truncation alone is what used to make the full workbook
+ * export 500: two events whose slugs share their first 21 characters
+ * (general-body-meeting-2026, general-body-meeting-2026-2) both became
+ * "Responses_general-body-meeting-". A clash now gets a "~2", "~3"… suffix,
+ * cut in so the whole name still fits.
+ */
+export function uniqueSheetName(workbook: ExcelJS.Workbook, name: string): string {
+  let base = name.replace(/[[\]:*?/\\]/g, "-").replace(/^'+|'+$/g, "").trim() || "Sheet";
+  if (base.toLowerCase() === "history") base = "History-";
+  base = base.slice(0, MAX_SHEET_NAME);
+  const taken = new Set(workbook.worksheets.map((ws) => ws.name.toLowerCase()));
+  let candidate = base;
+  for (let n = 2; taken.has(candidate.toLowerCase()); n++) {
+    const suffix = `~${n}`;
+    candidate = `${base.slice(0, MAX_SHEET_NAME - suffix.length)}${suffix}`;
+  }
+  return candidate;
+}
+
 export function addReportSheet(
   workbook: ExcelJS.Workbook,
   name: string,
@@ -16,8 +41,7 @@ export function addReportSheet(
   rows: Array<Array<string | number | null>>,
   options?: { note?: string },
 ): ExcelJS.Worksheet {
-  // Excel sheet names: max 31 chars, no [ ] : * ? / \
-  const safeName = name.replace(/[[\]:*?/\\]/g, "-").slice(0, 31);
+  const safeName = uniqueSheetName(workbook, name);
   // A note (e.g. the leaderboard disclaimer) pushes the header down to row 2
   // and gets its own merged, italic row 1 — everything else about the sheet
   // (freeze pane, header styling, column widths) targets that shifted row.
