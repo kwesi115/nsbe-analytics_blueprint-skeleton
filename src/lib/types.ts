@@ -9,7 +9,7 @@
 export type Role = "admin" | "eboard" | "general" | "guest";
 
 /** A narrow, revocable capability grantable to one member independent of role — see lib/permissions.ts and prisma/schema.prisma's PermissionGrant. */
-export type PermissionName = "verifications_write" | "attendance_write" | "points_write" | "files_read";
+export type PermissionName = "verifications_write" | "attendance_write" | "points_write" | "files_read" | "houses_write";
 
 /**
  * WHY a caller was turned away from an admin surface — the shape lib/access.ts
@@ -304,6 +304,18 @@ export interface Event {
   createdBy: string;
   createdAt: Date | null;
   audience: Audience;
+  /** House Scoring settings — see lib/house-repo.ts. Optional only so hand-built test fixtures needn't carry it; lib/repo.ts eventToDomain always sets it. */
+  house?: EventHouseSettings;
+}
+
+export interface EventHouseSettings {
+  countsForShowUp: boolean;
+  countsForRepYourHouse: boolean;
+  countsForMonthlyHouse: boolean;
+  isHouseCompetition: boolean;
+  /** "JOHNSON" | "JEMISON" | "LATIMER" | "DEAN" — see lib/house-scoring.ts HOUSE_CODES. */
+  competitionWinners: string[];
+  houseScoredAt: Date | null;
 }
 
 export interface FormField {

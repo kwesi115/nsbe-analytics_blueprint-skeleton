@@ -6,6 +6,7 @@ import AdminNav from "@/components/admin/AdminNav";
 import EventsBoard from "@/components/admin/EventsBoard";
 import Button from "@/components/ui/Button";
 import { getEventCodeAlertState } from "@/lib/rate-limit";
+import { runHouseScoringSweep } from "@/lib/house-repo";
 import { getEventsWithStats, runTrashSweep } from "@/lib/repo";
 
 export default async function AdminEventsPage() {
@@ -22,6 +23,14 @@ export default async function AdminEventsPage() {
       await runTrashSweep(orgId);
     } catch (err) {
       console.error("[trash] lazy sweep failed", err);
+    }
+    // House scoring rides the same lazy hook: closed events that are due get
+    // scored and finished months get their first Own the Month calculation.
+    // Rate-limited on its own key (see lib/house-repo.ts runHouseScoringSweep).
+    try {
+      await runHouseScoringSweep(orgId);
+    } catch (err) {
+      console.error("[houses] lazy sweep failed", err);
     }
   });
   const events = await getEventsWithStats(orgId);

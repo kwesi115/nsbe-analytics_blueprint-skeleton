@@ -40,6 +40,12 @@ function readEventFields(formData: FormData) {
     points: pointsRaw === "" ? null : Number(pointsRaw),
     durationMinutes: durationRaw === "" ? null : Number(durationRaw),
     audience: String(formData.get("audience") ?? "all") as Audience,
+    house: {
+      countsForShowUp: formData.get("countsForShowUp") === "on",
+      countsForRepYourHouse: formData.get("countsForRepYourHouse") === "on",
+      countsForMonthlyHouse: formData.get("countsForMonthlyHouse") === "on",
+      isHouseCompetition: formData.get("isHouseCompetition") === "on",
+    },
   };
 }
 

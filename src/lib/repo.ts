@@ -58,6 +58,14 @@ import { missingSignupSteps, signupIsComplete, type StepKey } from "./signup";
 import { validateAnswers, serializeAnswers } from "./forms";
 import { formatMonthKey, formatSigned, memberDisplayName } from "./format";
 import { parseHouses, type House } from "./houses";
+import {
+  getCalculatedHouseMonths,
+  getHouseAwardsForEvent,
+  hasHouseFlags,
+  houseMonthWarningFor,
+  onHouseAttendanceChanged,
+  processEventHouseScoring,
+} from "./house-repo";
 import { generateSetupCode, hashPassword, verifyPassword } from "./passwords";
 import { openSetupCode, sealSetupCode } from "./setup-code";
 import { hashIp, isEventCodeLocked, recordEventCodeFailure } from "./rate-limit";
@@ -221,6 +229,8 @@ function permissionToDb(p: PermissionName): DbPermission {
       return DbPermission.POINTS_WRITE;
     case "files_read":
       return DbPermission.FILES_READ;
+    case "houses_write":
+      return DbPermission.HOUSES_WRITE;
   }
 }
 
@@ -234,6 +244,8 @@ function permissionFromDb(p: DbPermission): PermissionName {
       return "points_write";
     case DbPermission.FILES_READ:
       return "files_read";
+    case DbPermission.HOUSES_WRITE:
+      return "houses_write";
   }
 }
 
@@ -535,6 +547,14 @@ function eventToDomain(e: EventModel & { category: EventCategoryModel }): Event 
     createdBy: e.createdById ?? "",
     createdAt: e.createdAt,
     audience: audienceFromDb(e.audience),
+    house: {
+      countsForShowUp: e.countsForShowUp,
+      countsForRepYourHouse: e.countsForRepYourHouse,
+      countsForMonthlyHouse: e.countsForMonthlyHouse,
+      isHouseCompetition: e.isHouseCompetition,
+      competitionWinners: e.competitionWinners,
+      houseScoredAt: e.houseScoredAt,
+    },
   };
 }
 
@@ -3325,7 +3345,16 @@ export interface CreateEventInput {
   points?: number | null;
   durationMinutes?: number | null;
   audience?: Audience;
+  house?: EventHouseFlagsInput;
   createdBy: string;
+}
+
+/** The four House Scoring checkboxes — see prisma/schema.prisma Event and lib/house-repo.ts. */
+export interface EventHouseFlagsInput {
+  countsForShowUp: boolean;
+  countsForRepYourHouse: boolean;
+  countsForMonthlyHouse: boolean;
+  isHouseCompetition: boolean;
 }
 
 export async function createEvent(input: CreateEventInput): Promise<Event> {
@@ -3356,6 +3385,7 @@ export async function createEvent(input: CreateEventInput): Promise<Event> {
         status: DbEventStatus.DRAFT,
         durationMinutes: input.durationMinutes ?? defaultDuration,
         audience: audienceToDb(input.audience ?? "all"),
+        ...(input.house ?? {}),
         createdById: creator?.id ?? null,
       },
       include: EVENT_INCLUDE,
@@ -3378,6 +3408,7 @@ export interface UpdateEventInput {
   points?: number | null;
   durationMinutes?: number | null;
   audience?: Audience;
+  house?: EventHouseFlagsInput;
   actor: string;
 }
 
@@ -3409,6 +3440,22 @@ export async function updateEvent(input: UpdateEventInput): Promise<Event> {
       data.durationMinutes = input.durationMinutes ?? Number(await getConfigValue(orgId, "DEFAULT_EVENT_DURATION", "20"));
     }
     if (input.audience !== undefined) data.audience = audienceToDb(input.audience);
+    if (input.house) {
+      const h = input.house;
+      Object.assign(data, h);
+      const changed =
+        h.countsForShowUp !== existing.countsForShowUp ||
+        h.countsForRepYourHouse !== existing.countsForRepYourHouse ||
+        h.countsForMonthlyHouse !== existing.countsForMonthlyHouse ||
+        h.isHouseCompetition !== existing.isHouseCompetition;
+      if (changed) {
+        // A flag edit after the fact: the event's own House awards are due
+        // again (the sweep recomputes them), and a calculated month that
+        // contains it is flagged — never recalculated here.
+        data.houseChangedAt = new Date();
+        if (existing.houseScoredAt) data.houseScoringStale = true;
+      }
+    }
     if (input.slug !== undefined && input.slug.trim() !== "") {
       data.slug = await uniqueSlug(tx, orgId, slugify(input.slug), existing.id);
     }
@@ -3517,14 +3564,25 @@ export interface CloseEventNowInput {
 
 export async function closeEventNow(input: CloseEventNowInput): Promise<Event> {
   const { orgId } = input;
-  return prisma.$transaction(async (tx) => {
+  const now = input.now ?? new Date();
+  const closed = await prisma.$transaction(async (tx) => {
     const existing = await tx.event.findFirst({ where: { id: input.eventId, orgId, ...LIVE } });
     if (!existing) throw new AppError("NOT_FOUND", "Event not found");
-    const now = input.now ?? new Date();
     const row = await tx.event.update({ where: { id: input.eventId }, data: { closesAt: now }, include: EVENT_INCLUDE });
     await logAdminAction(tx, orgId, { actor: input.actor, action: "close_event", target: input.eventId });
-    return eventToDomain(row);
+    return row;
   });
+  // House scoring on close. A window that simply runs out is picked up by the
+  // lazy sweep instead (lib/house-repo.ts runHouseScoringSweep); a failure
+  // here leaves the event unscored for the sweep and never fails the close.
+  if (closed.status === DbEventStatus.SCHEDULED && (closed.countsForShowUp || closed.countsForRepYourHouse)) {
+    try {
+      await processEventHouseScoring(orgId, closed.id, { actor: input.actor, now, trigger: "closed" });
+    } catch (err) {
+      console.error("[houses] scoring on close failed", { eventId: closed.id, err });
+    }
+  }
+  return eventToDomain(closed);
 }
 
 export interface ReopenEventInput {
@@ -3645,6 +3703,9 @@ export async function addManualAttendance(input: AddManualAttendanceInput): Prom
       };
     });
     invalidateStandings(orgId, await getConfigValue(orgId, "SEASON", ""));
+    // House scoring is a separate track fed by the same Registration row — a
+    // late add recomputes the event's House awards if it was already scored.
+    await onHouseAttendanceChanged(orgId, event.eventId);
     return record;
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
@@ -3655,7 +3716,7 @@ export async function addManualAttendance(input: AddManualAttendanceInput): Prom
 }
 
 export async function deleteAttendance(orgId: string, id: string, actor: string): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  const eventId = await prisma.$transaction(async (tx) => {
     const row = await tx.registration.findFirst({
       where: { id, ...liveRegistrationWhere(orgId) },
       include: { user: { select: { email: true } } },
@@ -3667,8 +3728,10 @@ export async function deleteAttendance(orgId: string, id: string, actor: string)
       action: "delete_attendance",
       target: `${row.eventId}:${row.user.email}`,
     });
+    return row.eventId;
   });
   invalidateStandings(orgId, await getConfigValue(orgId, "SEASON", ""));
+  await onHouseAttendanceChanged(orgId, eventId);
 }
 
 /**
@@ -5108,6 +5171,7 @@ export async function addManualAttendanceBulk(input: {
 
   if (result.added.length > 0) {
     invalidateStandings(orgId, await getConfigValue(orgId, "SEASON", ""));
+    await onHouseAttendanceChanged(orgId, event.eventId);
   }
   return result;
 }
@@ -5187,7 +5251,7 @@ export async function removeRegistration(
   const trimmed = reason.trim();
   if (!trimmed) throw new AppError("VALIDATION_FAILED", "A reason is required to remove a registration.");
 
-  await prisma.$transaction(async (tx) => {
+  const eventId = await prisma.$transaction(async (tx) => {
     const row = await tx.registration.findFirst({
       where: { id: registrationId, ...liveRegistrationWhere(orgId) },
       include: { user: { select: { email: true } } },
@@ -5200,8 +5264,10 @@ export async function removeRegistration(
       target: `${row.eventId}:${row.user.email}`,
       detail: `${row.pointsAwarded} pts removed — ${trimmed}`,
     });
+    return row.eventId;
   });
   invalidateStandings(orgId, await getConfigValue(orgId, "SEASON", ""));
+  await onHouseAttendanceChanged(orgId, eventId);
 }
 
 /** Point correction on one registration, reason required and logged with the before/after values. */
@@ -6057,6 +6123,10 @@ export interface TrashEventPreview {
   registrations: number;
   gameBonuses: number;
   championWarning: { month: string; message: string } | null;
+  /** Set when the event's month already has a calculated Own the Month (House points) — flagged, never recalculated. */
+  houseWarning: string | null;
+  /** Non-revoked House awards this event contributed — every one stops counting while it's in the trash. */
+  houseAwards: number;
   groupImpact: TrashEventGroupImpact | null;
   retentionDays: number;
 }
@@ -6128,6 +6198,8 @@ export async function previewTrashEvent(orgId: string, eventId: string, now: Dat
     registrations,
     gameBonuses,
     championWarning: championWarningFor(event, registrations, calculated, "Deleting"),
+    houseWarning: await houseMonthWarningFor(orgId, row, "Deleting"),
+    houseAwards: await prisma.housePointAward.count({ where: { orgId, eventId, revokedAt: null, points: { not: 0 } } }),
     groupImpact,
     retentionDays,
   };
@@ -6188,7 +6260,16 @@ export async function restoreEvent(orgId: string, eventId: string, actor: string
     const registrations = await tx.registration.count({ where: { eventId } });
     await tx.event.update({
       where: { id: eventId },
-      data: { deletedAt: null, deletedById: null, deleteReason: null, permanentDeleteAt: null },
+      // House awards were never touched by the trash, so they come back
+      // exactly — houseScoringStale stays as it was. houseChangedAt is bumped
+      // so a House month calculated while the event was out is flagged.
+      data: {
+        deletedAt: null,
+        deletedById: null,
+        deleteReason: null,
+        permanentDeleteAt: null,
+        ...(hasHouseFlags(row) ? { houseChangedAt: new Date() } : {}),
+      },
     });
     await logAdminAction(tx, orgId, { actor, action: "restore_event", target: eventId, detail: row.name });
 
@@ -6196,7 +6277,14 @@ export async function restoreEvent(orgId: string, eventId: string, actor: string
     const w = championWarningFor(row, registrations, calculated, "Restoring");
     // Only when it was calculated WHILE this event was out — a calculation
     // from before the delete already counted it, and restoring puts it back.
-    return w && row.deletedAt && (calculated.get(w.month) ?? new Date(0)) > row.deletedAt ? w.message : null;
+    const champion = w && row.deletedAt && (calculated.get(w.month) ?? new Date(0)) > row.deletedAt ? w.message : null;
+    // Same rule for the House track's Own the Month.
+    let house: string | null = null;
+    if (row.closesAt && row.countsForMonthlyHouse && row.deletedAt) {
+      const houseCalculatedAt = (await getCalculatedHouseMonths(orgId)).get(monthKeyOf(row.closesAt));
+      if (houseCalculatedAt && houseCalculatedAt > row.deletedAt) house = await houseMonthWarningFor(orgId, row, "Restoring");
+    }
+    return [champion, house].filter(Boolean).join(" ") || null;
   });
   invalidateStandings(orgId, await getConfigValue(orgId, "SEASON", ""));
   return { championWarning: warning };
@@ -6476,15 +6564,17 @@ export async function purgeTrashedEvent(
     throw new AppError("VALIDATION_FAILED", "Type the event name exactly to confirm.", { fieldErrors: { confirm: "Doesn't match." } });
   }
 
-  const [registrations, awards, fields, linkedAdjustments] = await Promise.all([
+  const [registrations, awards, fields, linkedAdjustments, houseAwards] = await Promise.all([
     prisma.registration.findMany({ where: { eventId }, include: { answers: true, user: { select: { email: true } } } }),
     prisma.pointAward.findMany({ where: { eventId } }),
     prisma.formField.findMany({ where: { eventId } }),
     prisma.pointAward.count({ where: { relatedEventId: eventId } }),
+    // Cascade-deleted with the event (HousePointAward.event onDelete: Cascade) — kept in the snapshot.
+    getHouseAwardsForEvent(orgId, eventId),
   ]);
   const answers = registrations.reduce((n, r) => n + r.answers.length, 0);
   const registrationPoints = registrations.reduce((n, r) => n + r.pointsAwarded, 0);
-  const snapshotKey = await writePurgeSnapshot(orgId, "event", eventId, { event, fields, registrations, awards }, now);
+  const snapshotKey = await writePurgeSnapshot(orgId, "event", eventId, { event, fields, registrations, awards, houseAwards }, now);
 
   await prisma.$transaction(async (tx) => {
     await tx.registration.deleteMany({ where: { eventId } });
@@ -6497,7 +6587,7 @@ export async function purgeTrashedEvent(
       detail:
         `"${event.name}" (${event.date.toISOString().slice(0, 10)}) permanently deleted — ` +
         `${registrations.length} registration(s) worth ${registrationPoints} point(s) at check-in, ${answers} answer(s), ` +
-        `${awards.length} game bonus award(s), ${fields.length} form field(s)` +
+        `${awards.length} game bonus award(s), ${houseAwards.length} House award row(s), ${fields.length} form field(s)` +
         `${linkedAdjustments > 0 ? `; ${linkedAdjustments} adjustment(s) kept, unlinked` : ""}; ` +
         `trashed ${event.deletedAt?.toISOString()} — ${event.deleteReason ?? ""}; snapshot ${snapshotKey}`,
     });

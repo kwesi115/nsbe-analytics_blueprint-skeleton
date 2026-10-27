@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useState, type ReactNode } from "react";
 import type { EventFormState } from "@/app/(member)/admin/events/actions";
 import Button from "@/components/ui/Button";
 import Field, { inputClass, selectClass, textareaClass } from "@/components/ui/Field";
@@ -20,6 +20,7 @@ export default function EventForm({
   groups,
   submitLabel,
   defaultDurationMinutes,
+  winnerPicker,
 }: {
   action: (prevState: EventFormState, formData: FormData) => Promise<EventFormState>;
   event?: Event;
@@ -28,6 +29,8 @@ export default function EventForm({
   submitLabel: string;
   /** Config.DEFAULT_EVENT_DURATION — used only when creating a new event (an existing one keeps its own stored value). */
   defaultDurationMinutes: number;
+  /** The competition winner picker (edit page only) — its own form, so it renders after this one, revealed by the House competition box. */
+  winnerPicker?: ReactNode;
 }) {
   const [state, formAction, pending] = useActionState(action, INITIAL_STATE);
   const categoryById = new Map(categories.map((c) => [c.id, c]));
@@ -35,6 +38,7 @@ export default function EventForm({
   const inheritedPoints = categoryById.get(categoryId)?.memberPoints;
 
   const [audience, setAudience] = useState<Audience>(event?.audience ?? "all");
+  const [isCompetition, setIsCompetition] = useState(event?.house?.isHouseCompetition ?? false);
   const [audienceTouched, setAudienceTouched] = useState(false);
 
   // Only auto-defaults on a brand-new event (never clobbers an existing
@@ -48,6 +52,7 @@ export default function EventForm({
   }
 
   return (
+    <>
     <form action={formAction} className="flex flex-col gap-5">
       <Field label="Name" required>
         {(id) => <input id={id} name="name" required defaultValue={event?.name} className={inputClass} />}
@@ -135,6 +140,47 @@ export default function EventForm({
         </Field>
       </div>
 
+      <fieldset className="flex flex-col gap-2 rounded-xl border border-border p-4">
+        <legend className="px-1 text-sm font-medium text-foreground">House Scoring</legend>
+        <p className="text-xs text-muted">
+          A separate track — none of these change any member&apos;s individual points. Pick any combination. Attendance
+          counts verified General members only.
+        </p>
+        <label className="flex min-h-11 items-start gap-2 text-sm">
+          <input type="checkbox" name="countsForShowUp" defaultChecked={event?.house?.countsForShowUp ?? false} className="mt-1" />
+          <span>
+            <strong>Show Up</strong> — each House earns 1 point at 50% attendance, 2 at 75%.
+          </span>
+        </label>
+        <label className="flex min-h-11 items-start gap-2 text-sm">
+          <input type="checkbox" name="countsForRepYourHouse" defaultChecked={event?.house?.countsForRepYourHouse ?? false} className="mt-1" />
+          <span>
+            <strong>Rep Your House</strong> — the House with the highest attendance percentage earns 1 point (ties all earn it).
+          </span>
+        </label>
+        <label className="flex min-h-11 items-start gap-2 text-sm">
+          <input type="checkbox" name="countsForMonthlyHouse" defaultChecked={event?.house?.countsForMonthlyHouse ?? false} className="mt-1" />
+          <span>
+            <strong>Counts toward Own the Month</strong> — included in each House&apos;s monthly average attendance.
+          </span>
+        </label>
+        <label className="flex min-h-11 items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            name="isHouseCompetition"
+            checked={isCompetition}
+            onChange={(e) => setIsCompetition(e.target.checked)}
+            className="mt-1"
+          />
+          <span>
+            <strong>House competition</strong> — an admin picks the winning House(s) after the event closes; 1 point each.
+          </span>
+        </label>
+        {isCompetition && !winnerPicker ? (
+          <p className="text-xs text-muted">Save the event, then pick winners here or on the Houses tab once it closes.</p>
+        ) : null}
+      </fieldset>
+
       <Field label="Location">
         {(id) => <input id={id} name="location" defaultValue={event?.location} className={inputClass} />}
       </Field>
@@ -170,5 +216,12 @@ export default function EventForm({
         </Button>
       </div>
     </form>
+    {isCompetition && winnerPicker ? (
+      <section className="flex flex-col gap-2 rounded-xl border border-border p-4">
+        <h2 className="text-sm font-medium text-foreground">Competition winner(s)</h2>
+        {winnerPicker}
+      </section>
+    ) : null}
+    </>
   );
 }

@@ -139,7 +139,7 @@ describe("visibleAdminNav — the primary control", () => {
     for (const href of ["/admin/members", "/admin/groups", "/admin/awards", "/admin/settings", "/admin/join-codes"]) {
       expect(eboard).not.toContain(href);
     }
-    expect(eboard).toEqual(["/admin", "/admin/verifications", "/admin/leaderboard", "/admin/attendance", "/admin/qr"]);
+    expect(eboard).toEqual(["/admin", "/admin/verifications", "/admin/leaderboard", "/admin/attendance", "/admin/houses", "/admin/seasons", "/admin/qr"]);
   });
 
   it("shows a GENERAL member with one grant only that item", () => {

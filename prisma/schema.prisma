@@ -107,6 +107,33 @@ enum Permission {
   // VERIFICATIONS_WRITE, which every officer holds by role -- that would give
   // the whole E-Board the ability to walk off with every member's resume.
   FILES_READ
+  // Held outright only by ADMIN. The write half of /admin/houses — competition
+  // winners, MANUAL House awards, revokes, and every recalculation. Reading
+  // the tab is E-Board level (see lib/access.ts ADMIN_SURFACES). Its own
+  // domain so a House chair can run House scoring without POINTS_WRITE, which
+  // moves individual members.
+  HOUSES_WRITE
+}
+
+// The four NSBE Houses as a scoring identity. User.house stays a free String
+// holding the House's display NAME (see lib/houses.ts — Config.HOUSES_LIST
+// lets a chapter rename one); lib/house-scoring.ts houseFromUserValue maps it
+// onto this enum, and a value that maps to none of the four is "no House".
+enum House {
+  JOHNSON
+  JEMISON
+  LATIMER
+  DEAN
+}
+
+// The THIRD scoring track — see HousePointAward. Nothing here is read by the
+// member or E-Board tracks.
+enum HouseCategory {
+  SHOW_UP
+  REP_YOUR_HOUSE
+  WIN
+  OWN_THE_MONTH
+  MANUAL
 }
 
 // A chapter. One row for launch ("howard-nsbe"); everything org-scoped below
@@ -132,6 +159,7 @@ model Org {
   joinCodes        JoinCode[]
   permissionGrants PermissionGrant[]
   requestClaims    RequestClaim[]
+  housePointAwards HousePointAward[]
 }
 
 // The sole signup security boundary (see lib/joincodes.ts): role is whatever
@@ -167,32 +195,32 @@ model JoinCode {
 // Accounts left pending by the old scheme still carry a bcrypt hash of their
 // code in passwordHash with setupCode null; lib/credentials.ts accepts those.
 model User {
-  id                 String          @id @default(cuid())
-  orgId              String
-  org                Org             @relation(fields: [orgId], references: [id])
-  email              String
-  passwordHash       String?
+  id                  String          @id @default(cuid())
+  orgId               String
+  org                 Org             @relation(fields: [orgId], references: [id])
+  email               String
+  passwordHash        String?
   /// Sealed (AES-256-GCM under CODE_SECRET), never plaintext — see lib/setup-code.ts.
   setupCode           String?
   setupCodeIssuedAt   DateTime?
   /// The admin who issued the current code. Keys resetPassword's double-submit window.
   setupCodeIssuedById String?
-  firstName          String
-  lastName           String
-  studentId          String?
-  classification     Classification?
-  major              String?
-  majorOther         String?
-  membership         String?
-  house              String?
-  phone              String?
-  personalEmail      String?
-  tshirtSize         ShirtSize?
-  role               Role            @default(GENERAL)
-  status             UserStatus      @default(PENDING)
-  mustChangePassword Boolean         @default(false)
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
+  firstName           String
+  lastName            String
+  studentId           String?
+  classification      Classification?
+  major               String?
+  majorOther          String?
+  membership          String?
+  house               String?
+  phone               String?
+  personalEmail       String?
+  tshirtSize          ShirtSize?
+  role                Role            @default(GENERAL)
+  status              UserStatus      @default(PENDING)
+  mustChangePassword  Boolean         @default(false)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
 
   // Self-reported at check-in; only an admin's *VerifiedAt makes it count
   // toward standings (see lib/points.ts isEligible). Never zeroed out by
@@ -277,6 +305,9 @@ model User {
   pointAwards        PointAward[]   @relation("PointAwardUser")
   awardedPointAwards PointAward[]   @relation("PointAwardAwardedBy")
   revokedPointAwards PointAward[]   @relation("PointAwardRevokedBy")
+
+  awardedHousePoints HousePointAward[] @relation("HousePointAwardAwardedBy")
+  revokedHousePoints HousePointAward[] @relation("HousePointAwardRevokedBy")
 
   permissionGrants        PermissionGrant[] @relation("PermissionGrantUser")
   grantedPermissionGrants PermissionGrant[] @relation("PermissionGrantGrantedBy")
@@ -385,30 +416,30 @@ model EventGroup {
 // collide on it. Both rules are also CHECK constraints (migration
 // 20260918120000_point_adjustments_and_trash).
 model PointAward {
-  id          String    @id @default(cuid())
-  orgId       String
-  org         Org       @relation(fields: [orgId], references: [id])
-  userId      String
-  user        User      @relation("PointAwardUser", fields: [userId], references: [id])
-  kind        AwardKind
-  points      Int
+  id             String    @id @default(cuid())
+  orgId          String
+  org            Org       @relation(fields: [orgId], references: [id])
+  userId         String
+  user           User      @relation("PointAwardUser", fields: [userId], references: [id])
+  kind           AwardKind
+  points         Int
   // Required for GAME_COMPETITION — the @@unique below is the actual +1-per-member-per-event cap.
-  eventId     String?
-  event       Event?    @relation(fields: [eventId], references: [id])
+  eventId        String?
+  event          Event?    @relation(fields: [eventId], references: [id])
   // "2026-09" — required for MONTHLY_CHAMPION.
-  periodMonth String?
-  reason      String
-  awardedById String?
-  awardedBy   User?     @relation("PointAwardAwardedBy", fields: [awardedById], references: [id])
-  awardedAt   DateTime  @default(now())
-  revokedAt   DateTime?
-  revokedById String?
-  revokedBy   User?     @relation("PointAwardRevokedBy", fields: [revokedById], references: [id])
-  revokeNote  String?
+  periodMonth    String?
+  reason         String
+  awardedById    String?
+  awardedBy      User?     @relation("PointAwardAwardedBy", fields: [awardedById], references: [id])
+  awardedAt      DateTime  @default(now())
+  revokedAt      DateTime?
+  revokedById    String?
+  revokedBy      User?     @relation("PointAwardRevokedBy", fields: [revokedById], references: [id])
+  revokeNote     String?
   // ADJUSTMENT only — see the model comment above.
   season         String?
   relatedEventId String?
-  relatedEvent   Event?  @relation("PointAwardRelatedEvent", fields: [relatedEventId], references: [id], onDelete: SetNull)
+  relatedEvent   Event?    @relation("PointAwardRelatedEvent", fields: [relatedEventId], references: [id], onDelete: SetNull)
 
   @@unique([orgId, userId, kind, eventId])
   @@unique([orgId, userId, kind, periodMonth])
@@ -460,10 +491,34 @@ model Event {
   deleteReason      String?
   permanentDeleteAt DateTime?
 
+  // House scoring (see HousePointAward and lib/house-scoring.ts). The four
+  // flags are independent — any combination may be set.
+  countsForShowUp        Boolean   @default(false)
+  countsForRepYourHouse  Boolean   @default(false)
+  countsForMonthlyHouse  Boolean   @default(false)
+  isHouseCompetition     Boolean   @default(false)
+  // When House scoring last ran for this event. Null = never. An event whose
+  // closesAt is later than this (it was reopened) is due again.
+  houseScoredAt          DateTime?
+  // Set when attendance or a House flag changes after the event was scored —
+  // the event's own awards are then recomputed (inline, and by the lazy sweep
+  // as a backstop) and this clears. Restoring from the trash never sets it:
+  // the rows were kept, so they come back exactly as they were.
+  houseScoringStale      Boolean   @default(false)
+  // Bumped whenever something that feeds this event's MONTH numbers changes
+  // after close — attendance added/removed, restored from the trash, a House
+  // flag edited. A calculated Own the Month older than this is flagged as
+  // needing recalculation; it is never recalculated automatically.
+  houseChangedAt         DateTime?
+  // isHouseCompetition only — chosen by an admin after the event closes.
+  competitionWinners     House[]   @default([])
+  competitionWinnersById String?
+
   fields             FormField[]
   registrations      Registration[]
   pointAwards        PointAward[]
-  relatedAdjustments PointAward[]   @relation("PointAwardRelatedEvent")
+  relatedAdjustments PointAward[]      @relation("PointAwardRelatedEvent")
+  housePointAwards   HousePointAward[]
 
   @@unique([orgId, slug])
   @@index([orgId, permanentDeleteAt])
@@ -471,6 +526,66 @@ model Event {
   @@index([status, opensAt, closesAt])
   @@index([categoryId])
   @@index([groupId])
+}
+
+// One House's points for one reason. House totals are DERIVED by summing the
+// non-revoked rows for a season whose event (if any) is live — nothing stores
+// a running total. See lib/house-repo.ts.
+//
+// Idempotency is the two @@unique constraints, not application logic: there
+// is exactly one row per (House, category, event) and per (House, category,
+// month), revoked or not, so reprocessing an event can only UPDATE its rows.
+// Postgres treats NULL as distinct, so MANUAL rows (neither eventId nor
+// periodMonth) are unlimited, and each constraint only bites on the
+// categories that carry its column — enforced by CHECKs in the migration.
+//
+// Every automatic row records its inputs: attendeeCount / rosterCount /
+// percentage and the attending member ids, as of the moment scoring ran.
+// A recalculation overwrites them with the CURRENT roster's numbers and moves
+// the first values into originalSnapshot, once, so an admin can always see
+// what the award originally said. A 0-point row is still written for a House
+// that was scored and earned nothing — it is the record of WHY.
+model HousePointAward {
+  id               String        @id @default(cuid())
+  orgId            String
+  org              Org           @relation(fields: [orgId], references: [id])
+  // Event awards: the season of the event's date. Month awards: the month's.
+  // MANUAL: Config.SEASON at creation. The House board shows Config.SEASON only.
+  season           String
+  house            House
+  category         HouseCategory
+  points           Int
+  eventId          String?
+  event            Event?        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  // "2026-10" — OWN_THE_MONTH only.
+  periodMonth      String?
+  attendeeCount    Int?
+  rosterCount      Int?
+  // attendeeCount / rosterCount x 100 (or the monthly average), to 4 places.
+  // Display and audit only — comparisons use exact fractions.
+  percentage       Decimal?      @db.Decimal(7, 4)
+  attendeeIds      String[]      @default([])
+  // Every input the rule compared — e.g. all four Houses' percentages for
+  // REP_YOUR_HOUSE, each event's percentage for OWN_THE_MONTH.
+  inputs           Json?
+  // The values this row was first written with, kept once a recalculation
+  // changes them. Null until then.
+  originalSnapshot Json?
+  recalculatedAt   DateTime?
+  reason           String
+  // Null when automatic.
+  awardedById      String?
+  awardedBy        User?         @relation("HousePointAwardAwardedBy", fields: [awardedById], references: [id])
+  awardedAt        DateTime      @default(now())
+  revokedAt        DateTime?
+  revokedById      String?
+  revokedBy        User?         @relation("HousePointAwardRevokedBy", fields: [revokedById], references: [id])
+  revokeNote       String?
+
+  @@unique([orgId, house, category, eventId])
+  @@unique([orgId, house, category, periodMonth])
+  @@index([orgId, season, house])
+  @@index([eventId])
 }
 
 model FormField {
@@ -586,11 +701,17 @@ model RequestClaim {
   id        String   @id @default(cuid())
   orgId     String
   org       Org      @relation(fields: [orgId], references: [id])
-  /** The action being guarded, e.g. "reset_password". */
+  /**
+   * The action being guarded, e.g. "reset_password".
+   */
   scope     String
-  /** Client-generated, unique per confirm-dialog opening. */
+  /**
+   * Client-generated, unique per confirm-dialog opening.
+   */
   token     String
-  /** What the action acted on, for reading the table later. Never part of the key. */
+  /**
+   * What the action acted on, for reading the table later. Never part of the key.
+   */
   target    String?
   createdAt DateTime @default(now())
 

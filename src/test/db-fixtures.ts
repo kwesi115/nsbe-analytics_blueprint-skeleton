@@ -40,6 +40,7 @@ export async function createTestOrg(label: string, season: string = TEST_SEASON)
       const users = { orgId };
       await prisma.registration.deleteMany({ where: { OR: [{ user: users }, { event: { orgId } }] } });
       await prisma.pointAward.deleteMany({ where: { orgId } });
+      await prisma.housePointAward.deleteMany({ where: { orgId } });
       await prisma.permissionGrant.deleteMany({ where: { orgId } });
       await prisma.uploadedFile.deleteMany({ where: { orgId } });
       await prisma.event.deleteMany({ where: { orgId } });

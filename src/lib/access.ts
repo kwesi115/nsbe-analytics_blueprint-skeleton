@@ -34,6 +34,7 @@ export const PERMISSION_LABEL: Record<PermissionName, string> = {
   attendance_write: "Attendance editing",
   points_write: "Point adjustments",
   files_read: "Resume access",
+  houses_write: "House scoring",
 };
 
 /**
@@ -75,12 +76,21 @@ export const PERMISSION_LABEL: Record<PermissionName, string> = {
  *                        every resume on the roster is not. It exists as a
  *                        grant so the recruiting chair can hold exactly this
  *                        surface without being made an admin.
+ *
+ *   houses_write         ADMIN only. The write half of /admin/houses: picking
+ *                        competition winners, MANUAL House awards, revoking,
+ *                        and every (re)calculation. READING the tab is plain
+ *                        E-Board level — standings and rosters are officer
+ *                        information. Not folded into points_write: moving a
+ *                        House is not moving a member, and a House chair can
+ *                        be granted this without being able to do the other.
  */
 const PERMISSION_ROLES: Record<PermissionName, readonly Role[]> = {
   verifications_write: ["admin", "eboard"],
   attendance_write: ["admin"],
   points_write: ["admin"],
   files_read: ["admin"],
+  houses_write: ["admin"],
 };
 
 /** True when `role` holds `permission` by virtue of the role alone. The one implementation — lib/permissions.ts defers to it rather than re-deriving a role comparison. */
@@ -212,6 +222,8 @@ export const ADMIN_SURFACES = [
   { href: "/admin/attendance", label: "Attendance", requires: { level: "eboard" } },
   { href: "/admin/groups", label: "NSBE Week groups", requires: { level: "admin" } },
   { href: "/admin/awards", label: "Bonus awards", requires: { level: "admin" } },
+  { href: "/admin/houses", label: "Houses", requires: { level: "eboard" } },
+  { href: "/admin/seasons", label: "Seasons", requires: { level: "eboard" } },
   { href: "/admin/exports", label: "Exports", requires: { level: "eboard", feature: "exports" } },
   { href: "/admin/resumes", label: "Resume bundle", requires: RESUME_BUNDLE_ACCESS },
   { href: "/admin/settings", label: "Settings", requires: { level: "admin" } },
